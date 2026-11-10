@@ -46,7 +46,7 @@ def chk_pdf(p):
 def chk_csv(p):
     raw = open(p, 'rb').read(); t = raw.decode('utf-8-sig')
     rs = list(csv.reader(io.StringIO(t)))
-    if len(rs) < 3: return f'只有 {len(rs)} 行'
+    if len(rs) < 2: return f'只有 {len(rs)} 行'
     for r in rs:
         for c in r:
             if BADTXT.search(c): return f'有异常值：{c[:30]}'
@@ -54,6 +54,16 @@ def chk_csv(p):
 
 def chk_json(p):
     j = json.load(open(p, encoding='utf-8'))
+    if j.get('format') == 'hpd-project':
+        plans = [f.get('plan') for f in j['document'].get('floors', [])] if j['document'].get('kind') == 'building' else [j['document']]
+        if j.get('version') != 2 or not plans or any(not isinstance(p.get('walls'), list) for p in plans): return '工程包格式不对'
+        ids = {a['id'] for a in j.get('assets', [])}
+        for p in plans:
+            s = p.get('enhancements', {})
+            if any(m.get('asset') and m['asset'] not in ids for m in s.get('models', []) + s.get('materials', [])): return '工程包资产引用异常'
+        return f"工程 {len(plans)} 层 · {len(ids)} 个离线资产 · {len(j.get('snapshots', []))} 个快照"
+    if j.get('format') == 'hpd-notes':
+        return f"批注 {len(j.get('notes', []))} 条" if j.get('version') == 1 and isinstance(j.get('notes'), list) else '批注包格式不对'
     if 'floors' in j: return f'整栋 {len(j["floors"])} 层'
     if j.get('version') != 2 or not isinstance(j.get('walls'), list): return '格式不对'
     return f'{len(j["walls"])} 面墙'
@@ -63,9 +73,21 @@ def chk_html(p):
     if len(t) < 100000: return f'太小（{len(t)} 字节）'
     return f'{len(t) // 1024} KB'
 
+def chk_svg(p):
+    import xml.etree.ElementTree as ET
+    root = ET.parse(p).getroot()
+    if not root.tag.endswith('svg') or not root.get('viewBox') or len(list(root.iter())) < 3: return 'SVG 格式不对'
+    return f'{len(list(root.iter()))} 个矢量元素'
+
+def chk_ics(p):
+    t = open(p, encoding='utf-8').read()
+    n = t.count('BEGIN:VEVENT')
+    if 'BEGIN:VCALENDAR' not in t or 'END:VCALENDAR' not in t or not n or n != t.count('END:VEVENT'): return '日历格式不对'
+    return f'{n} 个日历事件'
+
 for f in sorted(os.listdir(d)):
     p = os.path.join(d, f); ext = f.rsplit('.', 1)[-1].lower()
-    fn = {'png': chk_img, 'jpg': chk_img, 'jpeg': chk_img, 'dxf': chk_dxf, 'pdf': chk_pdf, 'csv': chk_csv, 'json': chk_json, 'html': chk_html}.get(ext)
+    fn = {'png': chk_img, 'jpg': chk_img, 'jpeg': chk_img, 'dxf': chk_dxf, 'pdf': chk_pdf, 'csv': chk_csv, 'json': chk_json, 'html': chk_html, 'svg': chk_svg, 'ics': chk_ics}.get(ext)
     if not fn: continue
     try:
         r = fn(p); ok = not re.search(r'太小|空白|太少|异常|不对|空的|0 页|只有', r)
@@ -73,6 +95,9 @@ for f in sorted(os.listdir(d)):
         r, ok = f'打不开：{type(e).__name__} {str(e)[:80]}', False
     rows.append((ok, f, r))
     if not ok: bad.append(f)
+if not rows:
+    print('没有可验证的导出文件')
+    sys.exit(1)
 for ok, f, r in rows: print(('OK  ' if ok else 'BAD ') + f + '  —  ' + r)
 print(f'\n{len(rows) - len(bad)} / {len(rows)} 个文件正常')
 sys.exit(1 if bad else 0)

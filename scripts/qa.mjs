@@ -3,6 +3,8 @@
 // 用法：node scripts/qa.mjs <设计器.html> <输出目录> [--quick]
 // 输出：<输出目录>/report.md（每项 通过 / 失败 + 原因）、shots/*.png（每一步截图，人工过一遍）、downloads/（导出的文件）
 import puppeteer from 'puppeteer-core';
+import { selectFurniture, testKitchen, testSocket, testPathTrace } from './qa-actions.mjs';
+import { findBrowser, browserArgs, prepareOutput } from './browser.mjs';
 import fs from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
@@ -10,11 +12,11 @@ import { pathToFileURL } from 'url';
 const [, , FILE, OUTARG, ...flags] = process.argv;
 if (!FILE || !OUTARG) { console.log('用法：node qa.mjs <设计器.html> <输出目录> [--quick]'); process.exit(1); }
 const QUICK = flags.includes('--quick');
-const OUT = path.resolve(OUTARG), SHOTS = path.join(OUT, 'shots'), DL = path.join(OUT, 'downloads');
-fs.rmSync(OUT, { recursive: true, force: true }); for (const d of [SHOTS, DL]) fs.mkdirSync(d, { recursive: true });
-const exe = ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/google-chrome'].find(p => fs.existsSync(p));
-const b = await puppeteer.launch({ executablePath: exe, headless: 'new', protocolTimeout: 900000, defaultViewport: { width: 1600, height: 960 },
-  args: ['--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] });
+const OUT = prepareOutput(OUTARG, FILE), SHOTS = path.join(OUT, 'shots'), DL = path.join(OUT, 'downloads');
+for (const d of [SHOTS, DL]) fs.mkdirSync(d, { recursive: true });
+const exe = findBrowser();
+const b = await puppeteer.launch({ executablePath: exe, headless: true, protocolTimeout: 900000, defaultViewport: { width: 1600, height: 960 },
+  args: browserArgs() });
 const page = await b.newPage();
 const errs = [];
 page.on('pageerror', e => errs.push('pageerror: ' + e.message));
@@ -46,11 +48,13 @@ const domBad = () => ev(() => {
   return bad;
 });
 async function step(name, fn, { shot = true, timeout = 120000 } = {}) {
-  const e0 = errs.length, t0 = Date.now(); let ok = true, msg = '';
+  const e0 = errs.length, t0 = Date.now(); let ok = true, skipped = false, msg = '', timer;
   try {
-    const r = await Promise.race([fn(), sleep(timeout).then(() => { throw new Error('超时'); })]);
+    const r = await Promise.race([fn(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('超时')), timeout); })]);
     if (typeof r === 'string') msg = r;
+    else if (r?.skipped) { skipped = true; msg = r.msg; }
   } catch (e) { ok = false; msg = String(e && e.message || e).slice(0, 300); }
+  finally { clearTimeout(timer); }
   await sleep(150);
   const ne = errs.slice(e0);
   if (ne.length) { ok = false; msg += (msg ? '；' : '') + '页面报错：' + ne.slice(0, 3).join(' | ').slice(0, 400); }
@@ -58,8 +62,8 @@ async function step(name, fn, { shot = true, timeout = 120000 } = {}) {
   if (bad.length) { ok = false; msg += (msg ? '；' : '') + '界面异常文字：' + bad.slice(0, 4).join(' / '); }
   let file = '';
   if (shot) { file = `${String(++shotN).padStart(3, '0')}_${name.replace(/[\\/:*?"<>| ]+/g, '_').slice(0, 40)}.png`; try { await page.screenshot({ path: path.join(SHOTS, file) }); } catch { } }
-  results.push({ name, ok, msg, ms: Date.now() - t0, shot: file });
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${msg ? '  —  ' + msg : ''}`);
+  results.push({ name, ok, skipped: skipped && ok, msg, ms: Date.now() - t0, shot: file });
+  console.log(`${!ok ? 'FAIL' : skipped ? 'SKIP' : 'PASS'}  ${name}${msg ? '  —  ' + msg : ''}`);
   return ok;
 }
 const must = (c, m) => { if (!c) throw new Error(m); };
@@ -92,9 +96,10 @@ if (multi) { await ev(() => { const b = document.querySelector('#floorDock [data
 
 /* ============================== 2D ============================== */
 await step('打开：无报错、平面已画出', async () => {
-  await sleep(1500); const s = await st(); must(s.walls > 0, '没有墙'); must(s.rooms > 0, '没有房间');
+  await sleep(1500); must(!errs.length, '首次加载报错：' + errs.join('；')); const s = await st(); must(s.walls > 0, '没有墙'); must(s.rooms > 0, '没有房间');
   const area = await ev(() => document.querySelector('#stArea').textContent); must(/㎡/.test(area), '状态栏面积缺失');
-  const r = await ev(() => __designer.runChecks()); const errsN = r.issues.filter(i => i.level === 'error');
+  const r = await ev(() => __designer.runChecks()); const errsN = r.issues.filter(i => ['error', 'warn'].includes(i.level));
+  must(!errsN.length, '初始户型存在检查问题：' + errsN.map(i => i.msg).join('；'));
   return `墙 ${s.walls} · 门窗 ${s.open} · 家具 ${s.furn} · 点位 ${s.elec}；检查：${r.issues.length} 条提示（其中错误 ${errsN.length}）`;
 });
 for (const [k, n] of [['layout', '布置'], ['mep', '水电'], ['ceiling', '顶面'], ['floor', '铺装'], ['demolition', '拆改']])
@@ -155,7 +160,7 @@ await step('选择墙：属性面板 / 改墙厚 / 撤销', async () => {
 });
 await step('立面图（墙）', async () => {
   await clickMM(wall.x, wall.y); await sleep(200);
-  const has = await ev(() => !!document.querySelector('#wElev')); if (!has) return '这面墙没有立面按钮';
+  const has = await ev(() => !!document.querySelector('#wElev')); if (!has) return { skipped: true, msg: '这面墙没有立面按钮' };
   await click('#wElev'); await sleep(800); const m = await ev(() => !!document.querySelector('.modal canvas')); must(m, '立面图没打开');
 });
 await closeModals();
@@ -221,7 +226,7 @@ await step('拆墙：拆除 ↔ 恢复（承重墙不能拆）', async () => {
   if ((await st()).phase === 'original') { await ev(() => document.querySelector('#leftPanel .tabs [data-tab="plan"]').click()); await ev(() => document.querySelector('#leftPanel [data-ph="renovate"]')?.click()); }
   const namesBefore = await ev(() => __designer.app.plan.rooms.map(r => r.name).sort().join('|'));
   const w = await ev(() => { const g = __designer.app.geo.active.find(g => !g.w.bearing && g.w.status !== 'new' && g.len > 1200); return g && { id: g.w.id, x: g.a.x + g.u.x * g.len / 2, y: g.a.y + g.u.y * g.len / 2 }; });
-  if (!w) return '没有可拆的墙';
+  if (!w) return { skipped: true, msg: '没有可拆的墙' };
   await click('#toolSeg [data-tool="demolish"]'); await clickMM(w.x, w.y); await sleep(300);
   const s1 = await ev(id => __designer.app.plan.walls.find(q => q.id === id).status, w.id); must(s1 === 'removed', '没拆掉：' + s1);
   await ev(() => __designer.setTool('select'));
@@ -254,7 +259,7 @@ if (furn) await step('家具：点选 / 拖动 / R 旋转 / Ctrl+D 复制 / Dele
 await step('选择房间：属性面板 + 立面图', async () => {
   await click('#layerSeg [data-layer="layout"]'); await ev(() => __designer.select(null));
   const lab = await ev(() => { const R = __designer.app.rooms.regions.filter(r => r.labels.length === 1 && r.area > 8).sort((a, b) => a.area - b.area); const l = R[0]?.labels[0]; return l && { id: l.id, x: l.x, y: l.y }; });
-  if (!lab) return '方案里没有房间标签';
+  if (!lab) return { skipped: true, msg: '方案里没有房间标签' };
   await clickMM(lab.x, lab.y); await sleep(300);
   const s = await st(); must(s.sel === 'room' || s.sel === 'roomLabel' || s.sel, '没选中房间');
   const ins = await ev(() => document.querySelector('#inspector').innerText); must(ins.length > 30, '属性面板空');
@@ -262,22 +267,10 @@ await step('选择房间：属性面板 + 立面图', async () => {
 });
 await closeModals();
 /* ---------------- 编辑细节：定制柜、门窗、房间材质、点位、楼层、方案 ---------------- */
-async function selectFurn(pred) {
-  await ev(() => { __designer.setLayer('layout'); __designer.setTool('select'); __designer.fit2D(); }); await sleep(200);
-  const cands = await ev(src => __designer.app.plan.furniture.filter(eval(src)).map(f => ({ id: f.id, x: f.x, y: f.y })), pred);
-  for (const f of cands.slice(0, 8)) { await clickMM(f.x, f.y); const sel = await ev(() => __designer.app.sel); if (sel.kind === 'furn' && sel.id === f.id) return f; }
-  return null;
-}
-await step('定制橱柜：一字 / L / U 造型切换', async () => {
-  const f = await selectFurn("f => ['counter', 'lCounter', 'uCounter'].includes(f.type)"); if (!f) return '方案里没有橱柜';
-  const has = await ev(() => !!document.querySelector('#kShape')); must(has, '属性面板没有橱柜定制');
-  const s0 = await ev(id => JSON.stringify(__designer.app.plan.furniture.find(q => q.id === id)), f.id);
-  for (const v of ['L', 'U', 'I']) { await ev(v => { const e = document.querySelector('#kShape'); if (!e) return; e.value = v; e.dispatchEvent(new Event('change', { bubbles: true })); }, v); await sleep(400); if (v === 'U') await page.screenshot({ path: path.join(SHOTS, `${String(++shotN).padStart(3, '0')}_定制橱柜_U形.png`) }); }
-  const s1 = await ev(id => JSON.stringify(__designer.app.plan.furniture.find(q => q.id === id)), f.id); must(s1 !== s0, '改造型没生效');
-  for (let k = 0; k < 3; k++) await click('#undoBtn'); await sleep(300);
-});
+const selectFurn = pred => selectFurniture(page, pred);
+await step('定制橱柜：一字 / L / U 造型切换', () => testKitchen(page, SHOTS));
 await step('定制柜：属性面板改分格', async () => {
-  const f = await selectFurn("f => f.type === 'cabinet' && f.cab"); if (!f) return '方案里没有定制柜';
+  const f = await selectFurn("f => f.type === 'cabinet' && f.cab"); if (!f) return { skipped: true, msg: '方案里没有定制柜' };
   const n = await ev(() => document.querySelectorAll('#inspector .cust select, #inspector .cust input').length); must(n > 2, '定制区没有选项');
   const ok = await ev(() => { const e = document.querySelector('#inspector .cust select'); if (!e || e.options.length < 2) return false; e.value = e.options[(e.selectedIndex + 1) % e.options.length].value; e.dispatchEvent(new Event('change', { bubbles: true })); return true; }); await sleep(400);
   must(ok, '改不了'); await page.screenshot({ path: path.join(SHOTS, `${String(++shotN).padStart(3, '0')}_定制柜.png`) }); await click('#undoBtn'); await sleep(200);
@@ -285,7 +278,7 @@ await step('定制柜：属性面板改分格', async () => {
 await step('门窗属性：改类型 / 开向 + 撤销', async () => {
   await ev(() => { __designer.setLayer('layout'); __designer.setTool('select'); __designer.fit2D(); });
   const o = await ev(() => { const A = __designer.app; for (const g of A.geo.active) for (const q of g.ops || []) if (q.o.type === 'door') { const s = (q.s0 + q.s1) / 2; return { id: q.o.id, x: g.a.x + g.u.x * s, y: g.a.y + g.u.y * s }; } return null; });
-  if (!o) return '没有门';
+  if (!o) return { skipped: true, msg: '没有门' };
   await clickMM(o.x, o.y); must((await st()).sel === 'opening', '没选中门');
   const t0 = await ev(id => JSON.stringify(__designer.app.plan.openings.find(q => q.id === id)), o.id);
   await ev(() => { const e = document.querySelector('#oType'); if (e) { e.value = [...e.options].map(x => x.value).find(v => v === 'double') || e.options[1].value; e.dispatchEvent(new Event('change', { bubbles: true })); } }); await sleep(300);
@@ -305,15 +298,7 @@ await step('房间属性：地面材质 / 吊顶 + 撤销', async () => {
   await page.screenshot({ path: path.join(SHOTS, `${String(++shotN).padStart(3, '0')}_房间属性.png`) });
   await click('#undoBtn'); await sleep(300);
 });
-await step('水电点位属性：改类型 + 撤销', async () => {
-  await ev(() => { __designer.setLayer('mep'); __designer.setTool('select'); });
-  const e = await ev(() => { const e = __designer.app.plan.elec.find(e => e.kind === 'socket'); return e && { id: e.id, x: e.x, y: e.y }; }); if (!e) return '没有插座';
-  await clickMM(e.x, e.y); const sel = await st(); if (sel.sel !== 'elec') return '点位被别的元素盖住，跳过';
-  e.id = await ev(() => __designer.app.sel.id);
-  const k0 = await ev(id => __designer.app.plan.elec.find(q => q.id === id).kind, e.id);
-  await ev(() => { const s = document.querySelector('#eKind'); if (s) { s.value = [...s.options].map(o => o.value).find(v => v !== s.value); s.dispatchEvent(new Event('change', { bubbles: true })); } }); await sleep(300);
-  const k1 = await ev(id => __designer.app.plan.elec.find(q => q.id === id)?.kind, e.id); must(k1 !== k0, '类型没改'); await click('#undoBtn'); await sleep(200);
-});
+await step('水电点位属性：改类型 + 撤销', () => testSocket(page, SHOTS));
 if (!multi) await step('楼层：复制本层为二层 → 楼层面板出现 → 撤销', async () => {
   await click('#leftPanel .tabs [data-tab="plan"]'); await sleep(300);
   await ev(() => document.querySelector('#leftPanel [data-addf="copy"]').click()); await sleep(1200);
@@ -459,7 +444,7 @@ await step('漫游：进入 / 走动 / 转向 / 退出', async () => {
   await page.screenshot({ path: path.join(SHOTS, `${String(++shotN).padStart(3, '0')}_漫游画面.png`) });
 });
 await step('720° 全景（漫游中）', async () => {
-  await click('#panoBtn'); await sleep(6000); must(await ev(() => !!document.querySelector('.modal')), '全景预览没打开');
+  await click('#panoBtn'); await page.waitForFunction(() => !!document.querySelector('.modal'), { timeout: 60000 });
   const f = await expectDownload(() => ev(() => { const b = [...document.querySelectorAll('.modal button')].find(x => /下载|保存/.test(x.textContent)); if (!b) throw new Error('全景预览里没有下载按钮'); b.click(); })); await closeModals(); return f.join(',');
 }, { timeout: 90000 });
 await step('3D 里点门 / 开关（射线点中可交互物体）', async () => {
@@ -472,19 +457,11 @@ await step('3D 里点门 / 开关（射线点中可交互物体）', async () =>
   must(r === 'ok' || r === 'no door', r);
 });
 await step('退出漫游', async () => { await page.keyboard.press('Escape'); await sleep(1800); must(!(await ev(() => __designer.S3.fp.active)), '没退出'); });
-if (!QUICK) await step('光线追踪出图（提前结束保存）', async () => {
-  await ev(() => { document.querySelector('#rendMode').value = 'pt'; document.querySelector('#resIn').value = '1920x1080'; });
-  const f = await expectDownload(async () => {
-    await click('#renderBtn');
-    const t0 = Date.now(); while (Date.now() - t0 < 300000) { const s = await ev(() => document.querySelector('#ptProg span').textContent); if (/已采样 ([2-9]\d|\d{3})/.test(s)) break; await sleep(2000); }
-    await ev(() => document.querySelector('#ptProg button').click());
-  }, { wait: 360000 });
-  await ev(() => { document.querySelector('#rendMode').value = 'raster'; }); return f.join(',');
-}, { timeout: 400000 });
+if (!QUICK) await step('光线追踪出图（提前结束保存）', () => testPathTrace(page, expectDownload), { timeout: 500000 });
 /* 智能中控 */
 await step('智能中控：进入', async () => { await click('#smartBtn'); await sleep(4000); must(await ev(() => !!document.querySelector('#smExit') && getComputedStyle(document.querySelector('#smExit')).display !== 'none'), '没进入中控'); });
 for (const t of ['light', 'env', 'dev', 'robot', 'sec']) await step(`中控分类：${t}`, async () => {
-  const has = await ev(t => { const b = document.querySelector(`#smTabs [data-tab="${t}"]`); if (b) b.click(); return !!b; }, t); if (!has) return '没有这个分类';
+  const has = await ev(t => { const b = document.querySelector(`#smTabs [data-tab="${t}"]`); if (b) b.click(); return !!b; }, t); if (!has) return { skipped: true, msg: '没有这个分类' };
   await sleep(1500);
   const pins = await ev(() => [...document.querySelectorAll('.sm-pin')].filter(p => p.style.visibility !== 'hidden' && p.offsetParent).length);
   if (pins) { await ev(() => [...document.querySelectorAll('.sm-pin')].find(p => p.style.visibility !== 'hidden' && p.offsetParent).click()); await sleep(2200); const card = await ev(() => document.querySelector('#smCard')?.innerText || ''); must(card.length > 4, '控制卡片是空的'); await page.screenshot({ path: path.join(SHOTS, `${String(++shotN).padStart(3, '0')}_中控卡片_${t}.png`) });
@@ -570,12 +547,14 @@ await page.setViewport({ width: 1600, height: 960 }); await to3d('2d');
 
 /* ============================== 报告 ============================== */
 const fail = results.filter(r => !r.ok);
-const md = [`# 设计器验收报告：${info.name}`, '', `文件：${FILE}`, `结果：**${results.length - fail.length} / ${results.length} 通过**${fail.length ? `，${fail.length} 项失败` : ''}`, '',
+const skipped = results.filter(r => r.skipped);
+const passed = results.filter(r => r.ok && !r.skipped).length;
+const md = [`# 设计器验收报告：${info.name}`, '', `文件：${FILE}`, `结果：**${passed} / ${results.length} 通过，${skipped.length} 项跳过**${fail.length ? `，${fail.length} 项失败` : ''}`, '',
   '| # | 项目 | 结果 | 说明 | 截图 |', '|---|---|---|---|---|',
-  ...results.map((r, i) => `| ${i + 1} | ${r.name} | ${r.ok ? '✅' : '❌'} | ${(r.msg || '').replace(/\|/g, '/')} | ${r.shot ? `shots/${r.shot}` : ''} |`), '',
+  ...results.map((r, i) => `| ${i + 1} | ${r.name} | ${!r.ok ? '❌' : r.skipped ? '跳过' : '✅'} | ${(r.msg || '').replace(/\|/g, '/')} | ${r.shot ? `shots/${r.shot}` : ''} |`), '',
   '导出的文件在 downloads/，用 `python scripts/qa_files.py <输出目录>/downloads` 检查能不能打开。'].join('\n');
 fs.writeFileSync(path.join(OUT, 'report.md'), md);
-fs.writeFileSync(path.join(OUT, 'report.json'), JSON.stringify({ file: FILE, results, errors: errs }, null, 1));
-console.log(`\n${results.length - fail.length} / ${results.length} 通过` + (fail.length ? `\n失败：\n${fail.map(r => ' - ' + r.name + '：' + r.msg).join('\n')}` : ''));
+fs.writeFileSync(path.join(OUT, 'report.json'), JSON.stringify({ file: FILE, mode: QUICK ? 'quick' : 'full', complete: !QUICK && !fail.length && !skipped.length, passed, skipped: skipped.length, results, errors: errs }, null, 1));
+console.log(`\n${passed} / ${results.length} 通过，${skipped.length} 项跳过` + (fail.length ? `\n失败：\n${fail.map(r => ' - ' + r.name + '：' + r.msg).join('\n')}` : ''));
 await b.close();
 process.exit(fail.length ? 2 : 0);

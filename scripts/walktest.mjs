@@ -13,6 +13,7 @@
  *   - 进门：坐标穿过墙线 = 门能过
  */
 import puppeteer from 'puppeteer-core';
+import { findBrowser, browserArgs } from './browser.mjs';
 import fs from 'fs';
 import path from 'path';
 import { pathToFileURL } from 'url';
@@ -20,11 +21,8 @@ import { pathToFileURL } from 'url';
 const [html, routeFile] = process.argv.slice(2);
 if (!html || !routeFile) { console.error('用法：node walktest.mjs 设计器.html 路线.json'); process.exit(1); }
 const route = JSON.parse(fs.readFileSync(routeFile, 'utf8'));
-const exe = [process.env.CHROME_PATH, 'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-  'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', 'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/usr/bin/google-chrome', '/usr/bin/chromium'].filter(Boolean).find(p => fs.existsSync(p));
-if (!exe) { console.error('找不到 Chrome/Edge，设置 CHROME_PATH'); process.exit(1); }
-const browser = await puppeteer.launch({ executablePath: exe, headless: true, args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader'] });
+const exe = findBrowser();
+const browser = await puppeteer.launch({ executablePath: exe, headless: true, args: browserArgs({ software: true }) });
 try {
   const page = await browser.newPage();
   page.on('pageerror', e => console.log('页面错误', e.message));

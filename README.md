@@ -39,6 +39,12 @@
 - [更新记录](#更新记录)
 - [开发：更新设计器模板](#开发更新设计器模板)
 
+## 设计助手2.0
+
+本地增强版新增十二个功能页，右下角“设计助手”进入：家庭需求、独立开放分区、动线及门扇操作净距、按成员分配收纳、快照及三方合并、真实静态GLB/glTF、用户贴图与材料组合、损耗人工运费预算、太阳遮挡与隐私视线、柜体节点及灯光情景、采购施工验收、离线批注协作。完整工程包和便携HTML携带模型贴图；原生分享也保留这些资产。
+
+计算依据、模型支持范围、数据迁移和新增验收见 [设计助手说明](reference/assistant-guide.md)。默认家庭人数、纬度等为可编辑起始值，价格为用户填写；不把估测数据当成已核实信息。
+
 ## 用法
 
 对你的 Agent 说：
@@ -294,3 +300,12 @@ node scripts/qa_furniture.mjs <设计器.html> <输出目录>  # 改家具建模
 
 设计器源码是一个 TypeScript + Vite + three.js 项目（不在本仓库）。改完功能后在项目里执行 `npm run skill:sync`：打包成单文件并复制到 `assets/template.html`。
 读取预设户型的代码在项目的 `src/model/spec.ts`（`planFromSpec`、`window.__PRESET__`）和 `src/app.ts`；DXF 导出在 `src/export/dxf.ts`，其骨架由 `scripts/dev/mk_dxf_template.py` 生成。
+
+
+## 本地优化版
+
+首次安装在技能目录运行 `python3 scripts/setup.py`，已有环境执行 `python3 scripts/setup.py --check`。运行 Python 脚本请使用 `.venv/bin/python`，Windows 使用 `.venv/Scripts/python.exe`。Node.js 要求 22.12+，浏览器可通过 `CHROME_PATH` 指定。
+
+本地版修复标题转义、增加基础户型校验、严格检查退出码和输出目录保护；验收脚本会拒绝已有非空目录。Python 与 Node 依赖均锁定。设计器原始源码仍需向上游取得，本次没有重新构建设计器模板。
+
+补测入口：`node scripts/qa-extra.mjs <html> <新输出目录> --pt-complete`，覆盖橱柜造型、插座属性、PDF 施工图和光追自动完成。局部模板补丁修复立面点位文字重叠及光追计数错误；维护入口为 `scripts/patch_template.py`，上游版本未知时停止。

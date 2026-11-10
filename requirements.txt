@@ -1,0 +1,9 @@
+ezdxf==1.4.5
+fonttools==4.68.0
+numpy==2.5.4
+opencv-python==4.14.0.94
+pillow==12.3.0
+pymupdf==1.28.2
+pyparsing==3.3.3
+pypdf==6.21.3
+typing_extensions==4.16.0

@@ -4,3 +4,4 @@ __pycache__/
 *_check/
 *_design/
 .DS_Store
+.venv/
