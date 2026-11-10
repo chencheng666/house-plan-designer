@@ -1,0 +1,10 @@
+{
+  "name": "户型装修设计助手",
+  "version": "2.0.0",
+  "release": "2.0.0-20261110",
+  "repository": "https://github.com/chencheng666/house-plan-designer",
+  "branch": "enhanced-v2",
+  "upstream": "https://github.com/ZWD11/house-plan-designer",
+  "demo": "https://www.daguojueqi.site/house-plan-designer/demo/",
+  "htmlSha256": "de7c776d8713eb42c0de9d626d05f48f0c8c8e112d611f7b8b228e2d36bf2923"
+}

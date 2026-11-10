@@ -1,0 +1,3 @@
+# 生成文件包含PDF交叉引用与GLSL字符串的有意义尾空格，保留构建产物原字节。
+site/demo/index.html -whitespace linguist-generated=true
+site/downloads/d128-designer.html -whitespace linguist-generated=true
